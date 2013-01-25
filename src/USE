@@ -1,0 +1,63 @@
+NAME
+       monpetitami - Simple SGE or TORQUE/MAUI monitoring
+
+SYNOPSIS
+       monpetitami [OPTION]
+
+               --help,-h       : display this help
+               --man           : show man
+
+DESCRIPTION
+       monpetitami is a simple SGE or TORQUE/Maui monitoring tool. Is is designed to show Jobs by group/queue/efficiency and MAUI FS based on QoS.  On SGE, FS and
+       efficiency is not implemented.
+
+       This script runs as a demon under monpetitami user, and its user must be able to see all qstat queue and run daignose -g command.
+
+       It read its config from /etc/monpetitami.conf .
+
+       Schedule::SGE is needed, but not added to package dependecy cause it’s not under any known repo. Please install it by hand.  You need Special Schedule::SGE with
+       Schedule::SGE::HStatus. Contact arnau.bria at gmail dot com if you don’t find it.
+
+       Notice that Proc::PID::File must be  perl-Proc-PID-File-1.X, not 0.X.
+
+       The script uses ganglia’s gmetric to send data to ganglia server, so correct ganglia conf is expected.
+
+       You need monpetitami-monitor under ganglia’s server /var/www/cgi-bin directory.
+
+       See monpetitami-monitor’s man page for further help.
+
+CONFIG FILE
+       /etc/monpetitami.conf
+
+       This file is in YAML format and need values for:
+
+        type: [SGE|torque]
+
+        pbs_server: valid pbs server fqdn
+
+        maui_server: valid maui server fqdn
+
+        user: monami/root (if you don't want to run the daemon as non-root user)
+
+        log_level: debug level (notice/debug)
+
+       All values are mandatory.
+
+SEE ALSO
+       man monpetitami-monitor
+
+AUTHOR
+       Arnau Bria RamA~rez
+
+BUGS
+       Report any bug/comment/donation to arnau.bria at gmail dot com
+
+COPYRIGHT
+       This is free software.
+
+       You may redistribute copies of it under the terms of the GNU
+
+       General  Public  License <http://www.gnu.org/licenses/gpl.html>.
+
+       There is NO WARRANTY, to the extent permitted by law.
+
