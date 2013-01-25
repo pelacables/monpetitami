@@ -1,0 +1,8 @@
+/var/log/monpetitami/monpetitami.log {
+	daily
+	missingok
+	create 0644 monpetitami root 
+	postrotate
+	/etc/init.d/monpetitami restart
+	endscript
+}

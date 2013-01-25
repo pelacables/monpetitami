@@ -1,0 +1,6 @@
+24/01/2013
+----------
+v 0.0.4.1 corrects a three  bugs:
+	- incorrect for bucle for parsing a hash reference
+	- logrotate restarts monpetitami daemon without environment. 
+	- qw status cannot be an "=", it must be "!~" cause also exists Eqw, hqw ...

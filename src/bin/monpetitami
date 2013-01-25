@@ -1,0 +1,455 @@
+#!/usr/bin/perl -w
+
+use strict;
+
+use constant LOG_DIR    => '/var/log/monpetitami';
+use constant LOG_FILE   => 'monpetitami.log';
+use constant PIDDIR     => LOG_DIR;
+
+use PBS qw/pbs_connect pbs_statjob pbs_default pbs_statnode pbs_disconnect pbs_deljob/;
+# use Devel::Size qw(size total_size);
+use YAML qw(LoadFile);
+use Getopt::Long;
+use Proc::PID::File;
+# perl-Proc-PID-File-1.27-1.el6.noarch needed?
+use Proc::Daemon;
+use Data::Dumper;
+use Log::Dispatch;
+use Log::Dispatch::File;
+use File::Spec;
+use Pod::Usage;
+use IO::Handle;
+use Schedule::SGE;
+
+
+my ($help,$man);
+my $conf=LoadFile("/etc/monpetitami.conf");
+GetOptions (
+        'version|V'     => sub { VersionMessage() ; exit 0},
+        'help|h'        => \$help,
+        'man'           => \$man,
+) or  pod2usage(2);
+
+pod2usage(1) if $help;
+pod2usage(-verbose => 2) if $man;
+
+
+# Fork and background process
+sub dienice ($);
+startDaemon();
+
+#### Global variables####
+# Config files for groups & queues & Eff 
+my ($groups,$defined_queues,$eff,$effbygroup,$shares,$queue);
+# Hostname 
+our $HOSTNAME = `hostname`;
+chomp $HOSTNAME;
+
+
+# Logging
+my $log = Log::Dispatch->new();
+$log->add(
+	Log::Dispatch::File->new(
+		callbacks => sub { my %h=@_; return scalar localtime(time)." ".$HOSTNAME." $0\[$$]: ".$h{message}."\n"; },
+		mode	  => 'append',
+		name      => 'logfile',
+		min_level => "$conf->{log_level}",
+		filename  => LOG_DIR."/".LOG_FILE,
+	)
+);
+
+$log->info("Starting monpetitami ");
+$log->error("Cannot read file /etc/monpetitami.conf . Exiting") unless (-r "/etc/monpetitami.conf");
+
+my $continue = 1;
+# Signal handlers
+$SIG{HUP}  = sub { $log->notice("Caught SIGHUP:  exiting gracefully"); $continue = 0; };
+$SIG{INT}  = sub { $log->notice("Caught SIGINT:  exiting gracefully"); $continue = 0; };
+$SIG{QUIT} = sub { $log->notice("Caught SIGQUIT:  exiting gracefully"); $continue = 0; };
+$SIG{TERM} = sub { $log->notice("Stopping service and  exiting gracefully"); $continue = 0; };
+$SIG{KILL} = sub { $log->notice("Someone killed me"); $continue = 0; };
+
+
+$log->notice("Starting Daemon...");
+
+while ($continue) {
+	$log->notice("Starting Montetiami in mode: $conf->{type}...");
+	if ($conf->{type} =~ 'torque'){
+		$log->notice("New cycle...");
+		&variable_init_clean ();
+		$log->notice("MAUI...");
+		&maui_gmetric ();
+		$log->notice("TORQUE...");
+		&pbs_gmetric ();
+		$log->notice("Sleeping for 70 sec...");
+		sleep 5;
+	}elsif ($conf->{type} =~ 'SGE'){
+		$log->notice("New cycle");
+		&variable_init_clean ();
+		&SGE_gmetric ();
+		$log->notice("Sleeping for 70 sec...");
+		sleep 70;
+	}
+}
+
+sub startDaemon {
+
+my $real_user=(getpwnam ("$conf->{user}"))[2];
+#eval { Proc::Daemon::Init({setuid => "$real_user"},child_STDOUT => "/tmp/out",child_STDERR=>"/tmp/err")};
+eval {Proc::Daemon::Init({setuid => "$real_user",child_STDERR=>"/var/log/monpetitami/critical.log"})};
+# PID File
+if ($@){
+	$log->warning( "Unable to start daemon:  $@  " . time() );
+	dienice("Unable to start daemon:  $@");
+}
+dienice("Already running!") if Proc::PID::File->running(dir=>"/var/run/monpetitami");
+#if hold_pid_file(PIDDIR."/monpetitami.pid");
+}
+
+sub dienice ($) {
+  my ($package, $filename, $line) = caller;
+  $log->critical("$_[0] at line $line in $filename");
+  die $_[0];
+}
+
+sub maui_gmetric () {
+	$log->debug("I'm inside maui_gmetric");
+	$log->info("Going to run diagnose... ");
+	my $command="diagnose -f --host=$conf->{maui_server}";
+	# creating pipes for parent/child communication
+	pipe(READER, WRITER);
+	WRITER->autoflush(1);
+	# Fork
+	my ($pid,$ret);
+	if (!defined($pid = fork())) {
+	        #fork returned undef, so failed
+		$log->info("Cannot fork: $! ... ");
+        	die ;
+	} elsif ($pid == 0) {
+		# Child. We write, we close the reader
+		close READER;
+		setpgrp(0,0);
+		#Exec writes on STDOUT, we must redirect it to WRITER
+		STDOUT->fdopen( \*WRITER, 'w' ) or die $!;
+		exec("$command");
+		exit (0);
+	} else {
+		# so this branch is the parent. We READ we close the writer
+		close WRITER;
+		eval {
+			#local $SIG{ALRM} = sub {kill 'SIGINT' => -$kidpid;waitpid ($kidpid,0);die "Timeout\n" };
+			local $SIG{ALRM} = sub {kill 'SIGINT' => -$pid;waitpid ($pid,0);die "Timeout\n" };
+			alarm 5;
+			waitpid($pid, 0);
+			alarm 0;
+		};
+		if ($@) {
+			die unless $@ eq "Timeout\n"; #unexpected error
+			warn "$command timed out.\n";
+			$log->error("diagnose timed out... ");
+			$log->error("Monpetitami could not connect to maui server. Skiping MAUI data gathering");
+			$ret = waitpid($pid,0) || die "Unable to reap child $pid (ret=$ret) - $!";
+			$log->error("diagnosei timeout: $ret... ");
+		}else{
+			$log->debug("I'm inside diagnose");
+	 		my $index;
+			my @diagnose=<READER>;
+			close READER;
+			for ($index=0; $index <= $#diagnose; $index++) {
+				if ($diagnose[$index] =~ /^QOS.*/) {
+					while ($diagnose[$index] !~ /^\s*$/){
+						if ($diagnose[$index] =~ /^[a-z]/) {
+							my ($group, $value, $target) = split ('\s+', $diagnose[$index]);
+							$group =~ s/\*//;
+							#print "G: $group, V: $value, T: $target\n";
+							$shares->{$group}->{target} = $target;
+							$shares->{$group}->{value} = $value;
+						}
+					$index++;
+					}
+				}
+			}
+			while ( my ($key, $value) = each(%$shares) ) {
+				gmetric ("FS_by_group_$key" , "$shares->{$key}->{value}" , "Shares");
+				gmetric ("FS_target_by_group_$key" , "$shares->{$key}->{target}" , "Shares");
+				#	$queue->{$key}->{running} = '0';
+			}
+		}	
+	}
+}	 
+
+sub pbs_gmetric () {
+$log->debug("I'm inside pbs_gmetric");
+#PBS connection
+#my $con=pbs_connect(pbs_default());
+my $con=pbs_connect("$conf->{pbs_server}");
+if ($con != "1" ) {
+	$log->error("qstat timed out... ");
+	$log->error("Monpetitami could not connect to pbs server. Skiping TORQUE data gathering");
+}else{
+	$log->info("Going to parse torque qstat output... ");
+	my $job_info=pbs_statjob($con, $ARGV[0],undef, undef);
+#	my $nodes_info=pbs_statnode($con, undef, undef, undef);
+
+	# Parse qstat -f output. Usage of PBS module
+	foreach (@{$job_info}) {
+	my ($job_id, $job_state, $job_owner, $job_queue, $job_walltime, $job_cpu, $group)='';
+	#print Dumper $_;
+	$job_id=$_->{name};
+		foreach (@{$_->{attribs}}) {
+			if ($_->{name} eq "job_state") {
+				$job_state=$_->{value};
+			}
+			if ($_->{name} eq "Job_Owner") {
+				($job_owner,my $batch)=split (/@/ , $_->{value});
+				my $groupid=(getpwnam ("$job_owner"))[3];
+				$group=getgrgid($groupid);
+			}	
+			if ($_->{name} eq "queue") {
+				$job_queue=$_->{value};
+			}
+			if ($_->{name} eq "resources_used.walltime") {
+				$job_walltime=$_->{value};
+			}
+			if ($_->{name} eq "resources_used.cput") {
+				$job_cpu=$_->{value};
+			}
+		}
+			if (( $job_state ne "Q" ) && (defined ($job_cpu) && defined ($job_walltime))) {
+				$groups->{$group}->{Running}++;
+				$queue->{$job_queue}{running}++;
+				(my $hour, my $minute, my $second)=split(/:/,$job_cpu);
+				my $cpu_seconds=$hour*60*60+$minute*60+$second;
+				($hour, $minute, $second)=split(/:/,$job_walltime);
+				my $wall_seconds=$hour*60*60+$minute*60+$second;
+				if ($wall_seconds!=0){
+					my $job_eff=$cpu_seconds/$wall_seconds;
+					$log->debug("JOBID: $job_id, CPU_TIME: $cpu_seconds, WALL_TIME: $wall_seconds, EFF: $job_eff GROUP: $group");
+					if ( $job_eff < "0.20") {
+						$eff->{20}++;
+						$effbygroup->{20}->{$group}++;
+					}elsif ( ($job_eff > "0.20") && ($job_eff < "0.80") ){
+						$eff->{50}++;
+						$effbygroup->{50}->{$group}++;
+					}else {
+						$eff->{80}++;
+						$effbygroup->{80}->{$group}++;
+					}
+				#print "$job_id $job_state , $job_owner, $group, $job_queue,  $job_cpu,  $job_walltime, $job_eff\n";
+				}
+			}else{
+				$queue->{$job_queue}{queued}++;
+				$groups->{$group}->{Queued}++;
+			}
+		#print "$job_state , $job_owner, $group, $job_queue\n";#, $job_cpu,  $job_walltime\n";
+	}
+	pbs_disconnect($con);
+
+	# Running gmetric
+	# Jobs by id:
+	#while ( my ($key, $value) = each(%$groups) ) {
+	for my $key ( sort keys %$groups) {
+		gmetric ("Jobs_by_group_$key" , "$groups->{$key}->{Running}" , "Jobs");
+		gmetric ("Jobs_q_by_group_$key" , "$groups->{$key}->{Queued}" , "Jobs");
+	}
+	#Jobs by queue
+	while ( my ($key, $value) = each(%$queue) ) {
+		if (!exists $queue->{$key}->{running}){
+			$queue->{$key}->{running} = '0';
+		}
+		if (!exists $queue->{$key}->{queued}){
+			$queue->{$key}->{queued} = '0';
+		}
+		gmetric ("Jobs_running_by_queue_$key", "$queue->{$key}->{running}", "Jobs");
+		gmetric ("Jobs_queued_by_queue_$key", "$queue->{$key}->{queued}", "Jobs");
+	}
+	#Job by eff
+	while ( my ($key, $value) = each(%$eff) ) {
+		gmetric ("Jobs_by_eff_$key", "$value" , "Jobs");
+	}
+	#Job by eff and by group 
+	for my $key ( sort keys %$effbygroup) {
+		for my $key2 ( sort keys %{$effbygroup->{$key}} ) {
+			gmetric ("Eff_"."$key"."_Group_"."$key2", "$effbygroup->{$key}{$key2}" , "Jobs");
+		}
+	}
+	$job_info={};
+}
+}
+
+
+sub SGE_gmetric () {
+$log->debug("I'm inside SGE_gmetric");
+my $sge=Schedule::SGE->new(-executable=>{qsub=>'/usr/bin/qsub', qstat=>'/usr/bin/qstat'});
+	# need to handle qstat errros... but SGE perl-API says nothing about this...
+	# Something as next lines
+	#if ($con != "1" ) {
+	#	$log->error("qstat timed out... ");
+	#	$log->error("Monpetitami could not connect to pbs server. Skiping TORQUE data gathering");
+	#}else{
+	$log->info("Going to parse SGE qstat output... ");
+	my ($job_id, $job_state, $job_owner, $job_queue, $job_walltime, $job_cpu, $group)='';
+	$log->debug("Before getting the hash... ");
+	my $job_info=$sge->job_hstatus();
+	$log->debug("After getting the hash... ");
+	# Parse qstat -f output. Usage of SGE module
+	for $job_id (sort keys %$job_info ) {
+
+		my $groupid=(getpwnam ("$job_info->{ $job_id }->{user}"))[3];
+		$group=getgrgid($groupid);
+		if ( $job_info->{ $job_id }->{status} !~ "qw" ) {
+			$groups->{$group}->{Running}++;
+			$queue->{$job_info->{$job_id}->{queue}}{Running}++;
+		}else{
+	#		$queue->{$queue}{queued}++;
+	#		No sense at SGE. Only if user has specified it, and then doing qstat -j $job_id |grep hard_queue_list:
+			$groups->{$group}->{Queued}++;
+		}
+	}
+	# Running gmetric
+	# Jobs by id:
+	while ( my ($key, $value) = each(%$groups) ) {
+			gmetric ("Jobs_by_group_$key" , "$groups->{$key}->{Running}" , "Jobs") if defined $groups->{$key}->{Running};
+			gmetric ("Jobs_q_by_group_$key" , "$groups->{$key}->{Queued}" , "Jobs") if defined $groups->{$key}->{Queued};
+	}
+
+	while (my ($key, $value) = (each  %$queue) ){
+		gmetric ("Jobs_by_queue_$key: " , "$queue->{$key}->{Running} " , "Jobs" );
+	}
+	# TODO: Jobs by eff and jobs by queue. Need to parse qstat -j
+	$job_info={};
+}
+
+sub gmetric () {
+	#$_[0]: Name; $_[1] $value; $_[2] units;
+	my $gmetric=`/usr/bin/gmetric --name $_[0] --value $_[1] --type int16 --units $_[2] --dmax 1000`;
+	$log->debug("I'm inside gmetric");
+	$log->info("/usr/bin/gmetric --name $_[0] --value $_[1] --type int16 --units $_[2] --dmax 1000");
+	#return $gmetric;
+}
+
+ 
+sub known_value () {
+	while (my ($key, $value) = each (%{$_[1]})) {
+		if ( $_[0] eq "$key" ) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+sub variable_init_clean () {
+	$log->debug("I'm inside variable_init_clean");
+	$groups={};
+	$defined_queues={};
+	$eff={};
+	$effbygroup={};
+	$shares={};
+	$queue={};
+	#$log->debug("$)");
+	$log->debug("1");
+	$eff={ 20 => 0, 50 => 0, 80 => 0 };
+}
+
+sub VersionMessage {
+        print "version: 0.0.3\n\n";
+}
+
+
+
+__END__
+#." Manpage for monpetitami
+#." Contact arnau.bria at gmail dot com to correct errors or typos.
+.TH man 1 "10 January 2013" "0.0.4" "monpetitami man page"
+
+=pod
+
+
+=head1 NAME
+
+monpetitami - Simple SGE or TORQUE/MAUI monitoring 
+
+=head1 SYNOPSIS
+
+B<monpetitami >
+[OPTION] 
+
+        --help,-h       : display this help
+        --man           : show man 
+
+=head1 DESCRIPTION
+
+monpetitami is a simple SGE or TORQUE/Maui monitoring tool. Is is designed to show 
+Jobs by group/queue/efficiency and MAUI FS based on QoS.
+On SGE, FS and efficiency is not implemented.
+
+This script runs as a demon under monpetitami user, and its user must be able 
+to see all qstat queue and run daignose -g command. 
+
+It read its config from /etc/monpetitami.conf .
+
+Schedule::SGE is needed, but not added to package dependecy cause it's not under any
+known repo. Please install it by hand.
+You need Special Schedule::SGE with Schedule::SGE::HStatus. Contact arnau.bria at gmail 
+dot com if you don't find it.
+
+Notice that Proc::PID::File must be  perl-Proc-PID-File-1.X, not 0.X.
+
+You can find log files under /var/log/monpetitami/
+
+The script uses ganglia's gmetric to send data to ganglia server, so correct 
+ganglia conf is expected.
+
+You need monpetitami-monitor under ganglia's server /var/www/cgi-bin directory.
+
+See monpetitami-monitor's man page for further help.
+
+=head1 CONFIG FILE
+
+
+B</etc/monpetitami.conf>
+
+This file is in YAML format and need values for:
+
+ type: [SGE|torque] 
+
+ pbs_server: valid pbs server fqdn
+
+ maui_server: valid maui server fqdn
+
+ user: monami/root (if you don't want to run the daemon as non-root user)
+
+ log_level: debug level (notice/debug)
+
+All values are mandatory.
+
+=head1 FILES
+
+ /etc/monpetitami.conf
+
+=over 12 
+
+=back
+
+=head1 SEE ALSO
+
+man monpetitami-monitor
+
+=head1 AUTHOR
+
+Arnau Bria Ramírez
+
+=head1 BUGS
+
+Report any bug/comment/donation to arnau.bria at gmail dot com
+
+
+=head1 COPYRIGHT
+
+This is free software.  
+
+You may redistribute copies of it under the terms of the GNU
+
+General  Public  License <http://www.gnu.org/licenses/gpl.html>.
+
+There is NO WARRANTY, to the extent permitted by law.  

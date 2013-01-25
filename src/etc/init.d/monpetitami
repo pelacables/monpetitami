@@ -1,0 +1,72 @@
+#!/bin/bash
+#
+# /bin/monpetitami This starts and stops /bin/monpetitami
+#
+# chkconfig: 2345 12 88
+# description: /monpetitami is a simple TORQUE/MAUI monitoring tool
+# processname: /bin/monpetitami
+# pidfile: /var/log/monpetitami/monpetitami.pid
+### BEGIN INIT INFO
+# Provides: $/bin/monpetitami
+### END INIT INFO
+
+# Source function library.
+. /etc/init.d/functions
+#cron restarts the daemon, and, if we don't konw vars, the output is not shown
+. /etc/profile
+
+binary="/bin/monpetitami"
+
+[ -x $binary ] || exit 0
+
+RETVAL=0
+
+start() {
+    echo -n "Starting monpetitami: "
+    daemon $binary
+    RETVAL=$?
+    PID=$!
+    echo
+    [ $RETVAL -eq 0 ] && touch /var/lock/subsys/monpetitami.pid
+
+    echo $PID > /var/run/monpetitami.lock
+}
+
+stop() {
+    echo -n "Shutting down monpetitami: "
+    killproc /bin/monpetitami
+    RETVAL=$?
+    echo
+    if [ $RETVAL -eq 0 ]; then
+        rm -f /var/run/monpetitami.lock
+        rm -f /var/lock/subsys/monpetitami.pid
+    fi
+}
+
+restart() {
+    echo -n "Restarting monpetitami: "
+    stop
+    sleep 2
+    start
+}
+
+case "$1" in
+    start)
+        start
+    ;;
+    stop)
+        stop
+    ;;
+    status)
+        status /bin/monpetitami
+    ;;
+    restart)
+        restart
+    ;;
+    *)
+        echo "Usage: $0 {start|stop|status|restart}"
+    ;;
+esac
+
+exit 0
+

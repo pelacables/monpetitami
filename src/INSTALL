@@ -1,0 +1,11 @@
+Special requirements
+--------------------
+
+
+SGE::Schedule and perl-Proc-PID-File-1.2X are needed.
+SGE::Schedule is not listed in any common repo, so you should install it
+with CPAN.
+
+No compilation needed.
+src.rpm is provided. Better use it. If not, read spec file to know 
+what it's needed to do.
