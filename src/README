@@ -1,0 +1,83 @@
+Notes on plotting
+=================
+
+monpetitami.pl:
+--------------
+
+monpetitami.pl was a nice scriupt that dynamically added new running/queueue 
+group/queue jobs with no need of previous definiton. But It's not 
+maintended anymorei cause it's more confortable if we use ganglia. It's not going to 
+dynamically add new groups to json files, but you can deal with that, i.e, creating a
+script that does it for you:
+
+	#!/bin/bash
+	
+	IFS="
+	"
+	ganglia_path='/var/lib/ganglia/rrds/Batch System/$server_name/'
+	output_path='/var/www/html/ganglia/graph.d'
+	color_file='/etc/monpetitami.d/colors'
+	
+	for eff in 20 50 80
+	do
+	output_file="$output_path/torque_eff_${eff}_by_group_report.json"
+	echo '{
+	   "report_name" : "'${eff}'_eff_by_group",
+	   "report_type" : "standard",
+	   "title" : "'${eff}'_eff_by_group",
+	   "vertical_label" : "Shares",
+	   "series" : [  ' >  $output_file
+	        line=1
+	        for file in $ganglia_path/Eff_$eff*
+	                do
+	                        file_name=$(basename $file)
+	                        graph=$(echo $file_name|sed 's/.rrd//' )
+	                        group=$(echo $graph|cut -d"_" -f4)
+	                        color=$(sed -n "$line p" ${color_file}${eff})
+	                        echo '{ "metric": "'$graph'", "color": "'$color'", "label": "'$group'", "stack_width": "2", "type": "stack" },' >> $output_file
+	                        let line++
+	                done
+	        sed -i '$s/,$//' $output_file 
+	        echo '] }' >> $output_file
+	done
+
+
+Ganglia:
+--------
+
+if you want to get nice colorized graphs:
+
+create /var/www/html/ganglia/graph.d/sge.json
+
+{
+ "report_name" : "SGE queues",
+ "report_type" : "standard",
+ "title" : "Jobs in My Cluster",
+ "vertical_label" : "Jobs",
+ "series" : [
+ { "metric": "Job_by_group_A", "color": "00FF00", "label": "Running", "stack_width": "2", "type": "stack" },
+ { "metric": "Job_by_group_B", "color": "FFFF00", "label": "Pending", "stack_width": "2", "type": "stack" },
+ { "metric": "Job_by_group_C",   "color": "FF0000", "label": "Error", "stack_width": "2", "type": "stack" }
+ ]
+}
+
+**be careful here cause syntax is really important.
+
+then other file:
+
+/var/lib/ganglia/conf/host_ant-master.linux.crg.es.json
+
+{
+    "included_reports" : ["sge"]
+}
+
+
+Monpetitami will generate graphs for :
+	- Job_by_group_$UNIX_group_name
+	- Job_q_by_group_$UNIX_group_name
+	- Job_by_qeueu_$SGE_cluster_queue
+
+So, complet new json files with the above files.
+
+** Notice that, if new groups start using your cluster, you must edit json file and
+add them to it.
