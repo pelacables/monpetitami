@@ -291,20 +291,21 @@ my $sge=Schedule::SGE->new(-executable=>{qsub=>'/usr/bin/qsub', qstat=>'/usr/bin
 	my ($job_id, $job_state, $job_owner, $job_queue, $job_walltime, $job_cpu, $group)='';
 	$log->debug("Before getting the hash... ");
 	my $job_info=$sge->job_hstatus();
-	$log->debug("After getting the hash... ");
 	# Parse qstat -f output. Usage of SGE module
-	for $job_id (sort keys %$job_info ) {
-
-		my $groupid=(getpwnam ("$job_info->{ $job_id }->{user}"))[3];
-		$group=getgrgid($groupid);
-		if ( $job_info->{ $job_id }->{status} !~ "qw" ) {
-			$groups->{$group}->{Running}++;
-			$queue->{$job_info->{$job_id}->{queue}}{Running}++;
-		}else{
-	#		$queue->{$queue}{queued}++;
-	#		No sense at SGE. Only if user has specified it, and then doing qstat -j $job_id |grep hard_queue_list:
-			$groups->{$group}->{Queued}++;
-		}
+	while ( my ($job_id, $value) = each(%$job_info) ) {
+	        while ( my ($instance, $info) = each(%$value) ) {
+	
+	                my $groupid=(getpwnam ("$job_info->{ $job_id }->{$instance}->{user}"))[3];
+	                $group=getgrgid($groupid);
+	                if ( $job_info->{ $job_id }->{$instance}->{status} !~ "qw" ) {
+	                        $groups->{$group}->{Running}++;
+	                        $queue->{$job_info->{$job_id}->{$instance}->{queue}}{Running}++;
+	                }else{
+	        #               $queue->{$queue}{queued}++;
+	        #               No sense at SGE. Only if user has specified it, and then doing qstat -j $job_id |grep hard_queue_list:
+	                        $groups->{$group}->{Queued}++;
+	                }
+	        }
 	}
 	# Running gmetric
 	# Jobs by id:

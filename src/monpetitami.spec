@@ -11,7 +11,7 @@
 
 Name:		monpetitami
 Version:	0.0.4
-Release:	2
+Release:	3
 Summary:	SGE or torque/maui monitoring tool
 Group:		Administration Tools
 License:	GPL
@@ -89,6 +89,9 @@ fi
 #rm -rf %{buildroot}
 
 %changelog
+* Tue Feb 12 2013 Arnau Bria <arnau.bria@gmail.com> 0.0.4
+- Added Job Array support
+
 * Thu Jan 23 2013 Arnau Bria <arnau.bria@gmail.com> 0.0.4
 - incorrect for bucle for parsing a hash reference
 - logrotate restarts monpetitami daemon without environment. 
