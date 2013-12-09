@@ -40,7 +40,7 @@ startDaemon();
 
 #### Global variables####
 # Config files for groups & queues & Eff 
-my ($groups,$defined_queues,$eff,$effbygroup,$shares,$queue);
+my ($groups,$defined_queues,$eff,$effbygroup,$shares,$queue,$slots);
 # Hostname 
 our $HOSTNAME = `hostname`;
 chomp $HOSTNAME;
@@ -291,20 +291,42 @@ my $sge=Schedule::SGE->new(-executable=>{qsub=>'/usr/bin/qsub', qstat=>'/usr/bin
 	my ($job_id, $job_state, $job_owner, $job_queue, $job_walltime, $job_cpu, $group)='';
 	$log->debug("Before getting the hash... ");
 	my $job_info=$sge->job_hstatus();
+	my $user_map;
+	my $group_map;
 	# Parse qstat -f output. Usage of SGE module
 	while ( my ($job_id, $value) = each(%$job_info) ) {
 	        while ( my ($instance, $info) = each(%$value) ) {
-	
-	                my $groupid=(getpwnam ("$job_info->{ $job_id }->{$instance}->{user}"))[3];
-	                $group=getgrgid($groupid);
+			
+			# We try to reduce load to NIS server
+			my $groupid;
+			if (defined $user_map->{$job_info->{$job_id}->{$instance}->{user}}->{group})  {
+				$groupid=$user_map->{$job_info->{$job_id}->{$instance}->{user}}->{group};
+				$group=$group_map->{$groupid}->{gid};
+				$log->debug("Utilizo array");
+			}else{		
+	                	$groupid=(getpwnam ("$job_info->{ $job_id }->{$instance}->{user}"))[3];
+				$user_map->{$job_info->{$job_id}->{$instance}->{user}}->{group}=$groupid;
+	                	$group=getgrgid($groupid);
+				$group_map->{$groupid}->{gid}=$group;
+				$log->debug("Utilizo  NIS");
+			}
+			if (!defined $slots->{$group}->{Running}) {
+				$slots->{$group}->{Running}='0';
+			}
+			if (!defined $slots->{$group}->{Queued}) {
+				$slots->{$group}->{Queued}='0';
+			}
 	                if ( $job_info->{ $job_id }->{$instance}->{status} !~ "qw" ) {
+				$slots->{$group}->{Running}=$slots->{$group}->{Running}+$job_info->{$job_id}->{$instance}->{procs};
 	                        $groups->{$group}->{Running}++;
 	                        $queue->{$job_info->{$job_id}->{$instance}->{queue}}{Running}++;
 	                }else{
 	        #               $queue->{$queue}{queued}++;
 	        #               No sense at SGE. Only if user has specified it, and then doing qstat -j $job_id |grep hard_queue_list:
 	                        $groups->{$group}->{Queued}++;
+				$slots->{$group}->{Queued}=$slots->{$group}->{Queued}+$job_info->{$job_id}->{$instance}->{procs};
 	                }
+			$log->debug("GROUP: $group Group_procs: $slots->{$group}->{Running} , Queued_Group_procs: $slots->{$group}->{Queued}");
 	        }
 	}
 	# Running gmetric
@@ -317,6 +339,12 @@ my $sge=Schedule::SGE->new(-executable=>{qsub=>'/usr/bin/qsub', qstat=>'/usr/bin
 	while (my ($key, $value) = (each  %$queue) ){
 		gmetric ("Jobs_by_queue_$key: " , "$queue->{$key}->{Running} " , "Jobs" );
 	}
+
+	while ( my ($key, $value) = each(%$slots) ) {
+			gmetric ("Slots_by_group_$key" , "$slots->{$key}->{Running}" , "Slots") if defined $slots->{$key}->{Running};
+			gmetric ("Slots_q_by_group_$key" , "$slots->{$key}->{Queued}" , "Slots") if defined $slots->{$key}->{Queued};
+	}
+	
 	# TODO: Jobs by eff and jobs by queue. Need to parse qstat -j
 	$job_info={};
 }
@@ -347,6 +375,7 @@ sub variable_init_clean () {
 	$effbygroup={};
 	$shares={};
 	$queue={};
+	$slots={};
 	#$log->debug("$)");
 	$log->debug("1");
 	$eff={ 20 => 0, 50 => 0, 80 => 0 };
