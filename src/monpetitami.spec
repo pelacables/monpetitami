@@ -81,8 +81,8 @@ fi
 %attr(0640, monpetitami,monpetitami) /etc/monpetitami.d/colors20 
 %attr(0640, monpetitami,monpetitami) /etc/monpetitami.d/colors50
 %attr(0640, monpetitami,monpetitami) /etc/monpetitami.d/colors80
-%attr(0640, monpetitami,monpetitami) /var/run/monpetitami
-%attr(0640, monpetitami,monpetitami) /var/log/monpetitami
+%attr(0740, monpetitami,monpetitami) /var/run/monpetitami
+%attr(0740, monpetitami,monpetitami) /var/log/monpetitami
 %attr(0444, root,root) /usr/share/man/man8/monpetitami.gz
 
 #%clean
